@@ -215,6 +215,66 @@ static const int _mScriptSocketNumErrors = sizeof(_mScriptSocketErrors) / sizeof
 
 #if LUA_VERSION_NUM < 503
 #define lua_pushinteger lua_pushnumber
+
+static int _luaPairs(lua_State* lua) {
+	luaL_checkany(lua, 1);
+	if (luaL_getmetafield(lua, 1, "__pairs") == LUA_TNIL) {
+		lua_getglobal(lua, "next");
+		lua_pushvalue(lua, 1);
+		lua_pushnil(lua);
+	} else {
+		lua_pushvalue(lua, 1);
+		lua_call(lua, 1, 3);
+	}
+	return 3;
+}
+
+static int _luaIpairsIter(lua_State* lua) {
+	lua_Integer i = luaL_checkinteger(lua, 2) + 1;
+	lua_pushinteger(lua, i);
+	lua_pushvalue(lua, -1);
+	lua_gettable(lua, 1);
+	return (lua_type(lua, -1) == LUA_TNIL) ? 1 : 2;
+}
+
+static int _luaIpairs(lua_State* lua) {
+	luaL_checkany(lua, 1);
+	lua_pushcfunction(lua, _luaIpairsIter);
+	lua_pushvalue(lua, 1);
+	lua_pushinteger(lua, 0);
+	return 3;
+}
+
+const char* luaL_tolstring (lua_State* lua, int idx, size_t* len) {
+	if (luaL_callmeta(lua, idx, "__tostring")) {
+		if (!lua_isstring(lua, -1)) {
+			luaL_error(lua, "'__tostring' must return a string");
+		}
+	} else {
+		switch (lua_type(lua, idx)) {
+			case LUA_TNUMBER:
+			case LUA_TSTRING:
+				lua_pushvalue(lua, idx);
+				break;
+			case LUA_TBOOLEAN:
+				lua_pushstring(lua, (lua_toboolean(lua, idx) ? "true" : "false"));
+				break;
+			case LUA_TNIL:
+				lua_pushliteral(lua, "nil");
+				break;
+			default:
+				luaL_getmetafield(lua, idx, "__name");
+				int tt = lua_type(lua, -1);
+				const char* name = (tt == LUA_TSTRING) ? lua_tostring(lua, -1) :
+				                                         luaL_typename(lua, idx);
+				lua_pushfstring(lua, "%s: %p", name, lua_topointer(lua, idx));
+				if (tt != LUA_TNIL)
+					lua_remove(lua, -2);
+				break;
+		}
+	}
+	return lua_tolstring(lua, -1, len);
+}
 #endif
 
 #ifndef LUA_OK
@@ -225,6 +285,7 @@ static const int _mScriptSocketNumErrors = sizeof(_mScriptSocketErrors) / sizeof
 #define luaL_traceback(L, M, S, level) lua_pushstring(L, S)
 #define lua_pushglobaltable(L) lua_pushvalue(L, LUA_GLOBALSINDEX)
 #endif
+
 
 const struct mScriptType mSTLuaFunc;
 
@@ -390,6 +451,8 @@ struct mScriptEngineContext* _luaCreate(struct mScriptEngine2* engine, struct mS
 
 	luaL_newmetatable(luaContext->lua, "mSTStruct");
 #if LUA_VERSION_NUM < 502
+	lua_pushliteral(luaContext->lua, "mSTStruct");
+	lua_setfield(luaContext->lua, -2, "__name");
 	luaL_register(luaContext->lua, NULL, _mSTStruct);
 #else
 	luaL_setfuncs(luaContext->lua, _mSTStruct, 0);
@@ -398,6 +461,8 @@ struct mScriptEngineContext* _luaCreate(struct mScriptEngine2* engine, struct mS
 
 	luaL_newmetatable(luaContext->lua, "mSTTable");
 #if LUA_VERSION_NUM < 502
+	lua_pushliteral(luaContext->lua, "mSTTable");
+	lua_setfield(luaContext->lua, -2, "__name");
 	luaL_register(luaContext->lua, NULL, _mSTTable);
 #else
 	luaL_setfuncs(luaContext->lua, _mSTTable, 0);
@@ -406,6 +471,8 @@ struct mScriptEngineContext* _luaCreate(struct mScriptEngine2* engine, struct mS
 
 	luaL_newmetatable(luaContext->lua, "mSTList");
 #if LUA_VERSION_NUM < 502
+	lua_pushliteral(luaContext->lua, "mSTList");
+	lua_setfield(luaContext->lua, -2, "__name");
 	luaL_register(luaContext->lua, NULL, _mSTList);
 #else
 	luaL_setfuncs(luaContext->lua, _mSTList, 0);
@@ -414,6 +481,14 @@ struct mScriptEngineContext* _luaCreate(struct mScriptEngine2* engine, struct mS
 
 	lua_getglobal(luaContext->lua, "require");
 	luaContext->require = luaL_ref(luaContext->lua, LUA_REGISTRYINDEX);
+
+#if LUA_VERSION_NUM < 503
+	lua_pushcfunction(luaContext->lua, _luaIpairs);
+	lua_setglobal(luaContext->lua, "ipairs");
+
+	lua_pushcfunction(luaContext->lua, _luaPairs);
+	lua_setglobal(luaContext->lua, "pairs");
+#endif
 
 	lua_pushliteral(luaContext->lua, "log");
 	lua_pushcclosure(luaContext->lua, _luaPrintShim, 1);
@@ -976,11 +1051,19 @@ bool _luaLoad(struct mScriptEngineContext* ctx, const char* filename, struct VFi
 		// Make the old _ENV the __index in the metatable
 		lua_newtable(luaContext->lua);
 		lua_pushliteral(luaContext->lua, "__index");
+#if LUA_VERSION_NUM >= 502
 		lua_getupvalue(luaContext->lua, -4, 1);
+#else
+		lua_getfenv(luaContext->lua, -4);
+#endif
 		lua_rawset(luaContext->lua, -3);
 
 		lua_pushliteral(luaContext->lua, "__newindex");
+#if LUA_VERSION_NUM >= 502
 		lua_getupvalue(luaContext->lua, -4, 1);
+#else
+		lua_getfenv(luaContext->lua, -4);
+#endif
 		lua_rawset(luaContext->lua, -3);
 
 		lua_setmetatable(luaContext->lua, -2);
@@ -1006,7 +1089,11 @@ bool _luaLoad(struct mScriptEngineContext* ctx, const char* filename, struct VFi
 		}
 
 		lua_rawset(luaContext->lua, -3);
+#if LUA_VERSION_NUM >= 502
 		lua_setupvalue(luaContext->lua, -2, 1);
+#else
+		lua_setfenv(luaContext->lua, -2);
+#endif
 		luaContext->func = luaL_ref(luaContext->lua, LUA_REGISTRYINDEX);
 		return true;
 	case LUA_ERRSYNTAX:
