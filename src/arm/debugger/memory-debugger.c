@@ -90,6 +90,9 @@ static void _checkWatchpoints(struct ARMDebugger* debugger, uint32_t address, en
 	for (i = 0; i < mWatchpointListSize(&debugger->watchpoints); ++i) {
 		watchpoint = mWatchpointListGetPointer(&debugger->watchpoints, i);
 		if (watchpoint->type & type && watchpoint->minAddress < maxAddress && minAddress < watchpoint->maxAddress) {
+			if (watchpoint->disabled) {
+				continue;
+			}
 			if (watchpoint->condition) {
 				int32_t value;
 				int segment;
@@ -121,6 +124,7 @@ static void _checkWatchpoints(struct ARMDebugger* debugger, uint32_t address, en
 			info.type.wp.newValue = newValue;
 			info.type.wp.watchType = watchpoint->type;
 			info.type.wp.accessType = type;
+			info.type.wp.accessSource = debugger->cpu->memory.accessSource;
 			info.address = address;
 			info.segment = 0;
 			info.width = width;
